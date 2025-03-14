@@ -1,0 +1,175 @@
+- name: Install MariaDB and Web Application
+  hosts: target
+  become: yes
+  vars:
+    mariadb_root_password: "123"
+    mariadb_database: "db_oprek"
+    mariadb_user: "user"
+    mariadb_user_password: "123"
+    mariadb_host: "192.168.134.227"
+    web_server_dir: "/var/www/html"
+
+
+  tasks:
+    - name: Install MariaDB on database servers
+      ansible.builtin.apt:
+        name:
+          - python3-pymysql
+          - mariadb-server
+          - mariadb-client
+        state: present
+      #    update_cache: yes
+
+    - name: Start and enable MariaDB service
+      ansible.builtin.service:
+        name: mariadb
+        state: started
+        enabled: yes
+
+    - name: Secure MariaDB and set root password
+      ansible.builtin.command: >
+        mysql -uroot -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '{{ mariadb_root_password }}';"
+
+    - name: Allow remote connections in MariaDB config
+      ansible.builtin.lineinfile:
+        path: /etc/mysql/mariadb.conf.d/50-server.cnf
+        regexp: '^bind-address'
+        line: 'bind-address = 0.0.0.0'
+
+    - name: Restart MariaDB
+      ansible.builtin.service:
+        name: mariadb
+        state: restarted
+        
+    - name: Create database
+      community.mysql.mysql_db:
+        name: "{{ mariadb_database }}"
+        state: present
+        login_user: root
+        login_password: "{{ mariadb_root_password }}"
+
+    - name: Create user with privileges
+      community.mysql.mysql_user:
+        name: "{{ mariadb_user }}"
+        password: "{{ mariadb_user_password }}"
+        priv: "{{ mariadb_database }}.*:ALL"
+        host: "%"
+        state: present
+        login_user: root
+        login_password: "{{ mariadb_root_password }}"
+
+    - name: Create table in the database
+      community.mysql.mysql_query:
+        query: |
+          CREATE TABLE IF NOT EXISTS users (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(100) NOT NULL,
+            email VARCHAR(100) UNIQUE NOT NULL
+          );
+        login_db: "{{ mariadb_database }}"
+        login_user: root
+        login_password: "{{ mariadb_root_password }}"
+
+    - name: Install Apache and PHP on web servers
+      ansible.builtin.apt:
+        name:
+          - apache2
+          - php
+          - php-mysqli
+        state: present
+     #   update_cache: yes
+
+    - name: Start and enable Apache service
+      ansible.builtin.service:
+        name: apache2
+        state: started
+        enabled: yes
+
+    - name: Deploy web application
+      ansible.builtin.copy:
+        dest: "{{ web_server_dir }}/index.php"
+        content: |
+          <?php
+          $servername = "{{ mariadb_host }}";
+          $username = "{{ mariadb_user }}";
+          $password = "{{ mariadb_user_password }}";
+          $dbname = "{{ mariadb_database }}";
+
+          // Create connection
+          $conn = new mysqli($servername, $username, $password, $dbname);
+
+          // Check connection
+          if ($conn->connect_error) {
+              die("Connection failed: " . $conn->connect_error);
+          }
+
+          // Insert data
+          if ($_SERVER["REQUEST_METHOD"] == "POST") {
+          $name = $_POST['name'];
+          $email = $_POST['email'];
+          $sql = "INSERT INTO users (name, email) VALUES ('$name', '$email')";
+          $conn->query($sql);
+          }
+
+          // Fetch data
+          $result = $conn->query("SELECT id, name, email FROM users");
+          ?>
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>Tekaje Class Property</title>
+            <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+          </head>
+          <body class="bg-light">
+            <div class="container py-5">
+                <h2 class="mb-4">Daftar Email (Input Email Anda)</h2>
+        
+          <form method="POST" class="mb-4">
+            <div class="row g-3">
+                  <div class="col-md-5">
+                      <input type="text" name="name" class="form-control" placeholder="Name" required>
+                  </div>
+                  <div class="col-md-5">
+                      <input type="email" name="email" class="form-control" placeholder="Email" required>
+                  </div>
+                  <div class="col-md-2">
+                      <button type="submit" class="btn btn-primary w-100">Add User</button>
+                  </div>
+            </div>
+            </form>
+
+            <table class="table table-bordered table-striped">
+              <thead class="table-dark">
+                  <tr>
+                      <th>ID</th>
+                      <th>Name</th>
+                      <th>Email</th>
+                  </tr>
+              </thead>
+              <tbody>
+                  <?php while ($row = $result->fetch_assoc()): ?>
+                      <tr>
+                          <td><?= htmlspecialchars($row['id']) ?></td>
+                          <td><?= htmlspecialchars($row['name']) ?></td>
+                          <td><?= htmlspecialchars($row['email']) ?></td>
+                      </tr>
+                  <?php endwhile; ?>
+              </tbody>
+            </table>
+          </div>
+          </body>
+          </html>
+
+
+        
+    - name: Remove default index.html
+      ansible.builtin.file:
+        path: "{{ web_server_dir }}/index.html"
+        state: absent
+
+    - name: Restart Apache service
+      ansible.builtin.service:
+        name: apache2
+        state: restarted

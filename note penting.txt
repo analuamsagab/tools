@@ -1,0 +1,7 @@
+rubah privilege
+grant all privileges on *.* to 'root'@'localhost(atau %)' identified by '123(atau pass anda)' with grant option;
+
+agar bisa di import
+sed -i 's/utf8mb4_0900_ai_ci/utf8mb4_general_ci/g' db_spp.sql petugas.sql
+
+

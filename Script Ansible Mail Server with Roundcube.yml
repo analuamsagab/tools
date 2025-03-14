@@ -1,0 +1,338 @@
+---
+- name: Install and Configure DNS Server (Code By Bagas Maulana)
+  hosts: target
+  become: yes
+  vars:
+    ip_address1: "192.168.252.54"
+    ip_address2: "192.168.252.54"
+    reverse: "252.168.192"
+    domain_name: "tekaje.net"
+    mail_user: "bagas"
+    mail_pass: "123"
+  tasks:
+    - name: Install Bind9
+      apt:
+        name: bind9
+        state: present
+        #update_cache: yes
+
+    - name: Configure named.conf.options
+      copy:
+        dest: /etc/bind/named.conf.options
+        content: |
+          options {
+              directory "/var/cache/bind";
+              recursion yes;
+              allow-query { any; };
+              forwarders {
+                  8.8.8.8;
+                  8.8.4.4;
+              };
+              dnssec-validation auto;
+          };
+      notify: Restart Bind9
+
+    - name: Configure named.conf.default-zones
+      ansible.builtin.lineinfile:
+        path: /etc/bind/named.conf.default-zones
+        insertafter: '};'
+        line: |
+          zone "{{ domain_name }}" {
+              type master;
+              file "/etc/bind/forward";
+          };
+          zone "{{ reverse }}.in-addr.arpa" {
+              type master;
+              file "/etc/bind/reverse";
+          };
+      notify: Restart Bind9
+
+    - name: Copy db.local to forward
+      copy:
+        src: /etc/bind/db.local
+        dest: /etc/bind/forward
+        remote_src: yes
+      notify: Restart Bind9
+
+    - name: Copy db.127 to reverse
+      copy:
+        src: /etc/bind/db.127
+        dest: /etc/bind/reverse
+        remote_src: yes
+      notify: Restart Bind9
+
+    - name: Create zone file for your domain
+      copy:
+        dest: /etc/bind/forward
+        content: |
+          $TTL    604800
+          @       IN      SOA     {{ domain_name }}. root.{{ domain_name }}. (
+                              2         ; Serial
+                         604800         ; Refresh
+                          86400         ; Retry
+                        2419200         ; Expire
+                         604800 )       ; Negative Cache TTL
+          ; Name servers
+          @       IN      NS      {{ domain_name }}.
+          @       IN      MX 10   {{ domain_name }}.
+                  IN      A       {{ ip_address1 }}
+          www     IN      A       {{ ip_address2 }}
+      notify: Restart Bind9
+    
+    - name: Create reverse file for your domain
+      copy:
+        dest: /etc/bind/reverse
+        content: |
+          $TTL    604800
+          @       IN      SOA     {{ domain_name }}. root.{{ domain_name }}. (
+                              2         ; Serial
+                         604800         ; Refresh
+                          86400         ; Retry
+                        2419200         ; Expire
+                         604800 )       ; Negative Cache TTL
+          ; Name servers
+          @       IN      NS      {{ domain_name }}.
+                  IN      PTR     {{ domain_name }}.
+                  IN      PTR     www.{{ domain_name }}.
+      notify: Restart Bind9
+
+    - name: Restart Bind9
+      systemd:
+        name: bind9
+        state: restarted
+
+    - name: Change nameserver in resolv.conf
+      lineinfile:
+        path: /etc/resolv.conf
+        regexp: '^nameserver '
+        line: "nameserver {{ ip_address1 }}"
+
+    - name: Install Mail Server
+      apt:
+        name:
+          - postfix
+          - dovecot-imapd
+        state: present
+
+    - name: Configure Postfix main.cf
+      lineinfile:
+        path: /etc/postfix/main.cf
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      loop:
+        - { regexp: '^myhostname =', line: 'myhostname = {{ domain_name }}' }
+        - { regexp: '^mydestination =', line: 'mydestination = localhost, mail.{{ domain_name }}, {{ domain_name }}' }
+        - { regexp: '^inet_protocols =', line: 'inet_protocols = ipv4'}
+        - { regexp: '^inet_interfaces =', line: 'inet_interfaces = all' }
+        - { regexp: '^home_mailbox =', line: 'home_mailbox = Maildir/' }
+        - { regexp: '^mynetworks =', line: 'mynetworks = 127.0.0.0/8, 0.0.0.0/0' }
+      notify: Restart Postfix
+
+    - name: Creating Maildir for user
+      command: "maildirmake.dovecot /etc/skel/Maildir"
+      args:
+          creates: /etc/skel/Maildir
+
+    - name: Configure Dovecot.conf
+      lineinfile:
+        path: /etc/dovecot/dovecot.conf
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      loop:
+        - { regexp: '^#listen = *, ::', line: 'listen = *' }
+      notify: Restart Dovecot
+    
+    - name: Configure Dovecot 10-mail.conf
+      lineinfile:
+        path: /etc/dovecot/conf.d/10-mail.conf
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      loop:
+        - { regexp: '^mail_location = mbox:~/mail:INBOX=/var/mail/%u', line: 'mail_location = maildir:~/Maildir' }
+      notify: Restart Dovecot
+
+    - name: Configure Dovecot 10-auth.conf
+      lineinfile:
+        path: /etc/dovecot/conf.d/10-auth.conf
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      loop:
+        - { regexp: '^#disable_plaintext_auth = yes', line: 'disable_plaintext_auth = no' }
+        - { regexp: '^auth_mechanisms = plain', line: 'auth_mechanisms = plain login' }
+      notify: Restart Dovecot
+
+    - name: Enable and start Postfix & Dovecot 
+      systemd:
+        name: "{{ item }}"
+        state: started
+        enabled: yes
+      loop:
+        - postfix
+        - dovecot
+
+    - name: Install roundcube
+      apt:
+        name:
+          - mariadb-server
+          - roundcube-core
+        state: present
+
+    - name: Select roundcube install roundcube dbconfig
+      debconf: 
+        name: roundcube-core
+        question: roundcube-core/dbconfig-install
+        value: "true"
+        vtype: boolean
+
+    - name: Input mysql password
+      debconf:
+          name: roundcube-core
+          question: roundcube-core/mysql/app-pass
+          value: "{{ mysql_pass }}"
+          vtype: password
+
+    - name: Pass confirmation
+      debconf:
+          name: roundcube-core
+          question: roundcube-core/mysql/app-pass-confirmation
+          value: "{{ mysql_pass }}"
+          vtype: password
+
+    - name: Change roundcube imap host config file
+      ansible.builtin.lineinfile:
+        path: /etc/roundcube/config.ini.php
+        regexp: "^\\$config\\['imap_host'\\] = .*;"
+        line: "$config['imap_host'] = ['{{ domain_name }}:143'];"
+        backrefs: yes
+    
+    - name: Change roundcube smtp host
+      ansible.buiiltin.lineinfile:
+        path: /etc/roundcube/config.ini.php
+        regexp: "^\\$config\\['smtp_host'\\] = .*;"
+        line: "$config['smtp_host'] = '{{ domain_name }}:25';"
+        backrefs: yes
+
+    - name: change user option
+      ansible.builtin.lineinfile:
+          path: /etc/roundcube/config.ini.php
+          regexp: "^\\$config\\['smtp_user'] = '%u';"
+          line: "$config['smtp_pass'] = '';"
+          backrefs: yes
+
+    - name: change pass option
+      ansible.builtin.lineinfile:
+        path: /etc/roundcube/config.ini.php
+        regexp: "^\\$config\\['smtp_pass'] = '%p';"
+        line: "$config['smtp_pass'] = '';"
+        backrefs: yes
+
+    - name: reconfigure roundcube-core
+      command: dpkg-reconfigure -f noninteractive roundcube-core
+    
+    - name: keep imap blank
+      debconf:
+        name: roundcube-core
+        question: roundcube-core/imap-server
+        value: ""
+        vtype: string
+
+    - name: select language
+      debconf:
+        name: roundcube-core
+        question: roundcube-core/language
+        value: "en_US"
+        vtype: string
+
+    - name: Select to reinstall db or not
+      debconf:
+        name: roundcube-core
+        question: roundcube-core/reconfigure-database
+        value: "true"
+        vtype: boolean
+      
+    - name: Select roundcube db connection method
+      debconf:
+        name: roundcube-core
+        question: roundcube-core/dbconfig-mysql-connection
+        value: "Unix Socket"
+        vtype: select
+
+    - name: Select auth plugin
+      debconf:
+        name: roundcube-core
+        question: roundcube-core/mysql-auth-plugin
+        value: "default"
+        vtype: select
+
+    - name: input your db name
+      debconf:
+        name: roundcube-core
+        question: roundcube-core/database-name
+        value: "roundcube"
+        vtype: string
+
+    - name: database user
+      debconf:
+        name: roundcube-core
+        question: roundcube-core/database-user
+        value: "roundcube@localhost"
+        vtype: string
+
+    - name: reconfigure mysql pass for roundcube
+      debconf:
+        name: roundcube-core
+        question: roundcube-core/database-password
+        value: "{{ mysql_pass }}"
+        vtype: string
+
+    - name: password confirmation
+      debconf:
+        name: roundcube-core
+        question: roundcube-core/mysql/app-pass-confirmation
+        value: "{{ mysql_pass }}"
+        vtype: string
+    
+    - name: Name of the database administrator
+      debconf:
+        name: roundcube-core
+        question: roundcube-core/database-admin
+        value: "root"
+        vtype: string
+
+    - name: Choose web service
+      debconf:
+          name: roundcube-core
+          question: roundcube-core/webserver
+          value: "apache2"
+          vtype: select
+
+    - name: web server restart
+      debconf:
+        name: roundcube-core
+        question: roundcube-core/webserver-restart
+        value: "true"
+        vtype: boolean
+
+    - name: Make virtual host for roundcube
+      
+    
+  handlers:
+    - name: Restart Bind9
+      systemd:
+        name: bind9
+        state: restarted
+
+    - name: Restart Postfix
+      systemd:
+        name: postfix
+        state: restarted
+
+    - name: Restart Dovecot 
+      systemd:
+        name: dovecot
+        state: restarted
+
+    
+
+
+

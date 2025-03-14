@@ -1,0 +1,105 @@
+---
+- name: Install and Configure DNS Server
+  hosts: target
+  become: yes
+  vars:
+    ip_address1: "192.168.252.54"
+    ip_address2: "192.168.252.54"
+    reverse: "252.168.192"
+  tasks:
+    - name: Install Bind9
+      apt:
+        name: bind9
+        state: present
+        update_cache: yes
+
+    - name: Configure named.conf.options
+      copy:
+        dest: /etc/bind/named.conf.options
+        content: |
+          options {
+              directory "/var/cache/bind";
+              recursion yes;
+              allow-query { any; };
+              forwarders {
+                  8.8.8.8;
+                  8.8.4.4;
+              };
+              dnssec-validation auto;
+          };
+      notify: Restart Bind9
+
+    - name: Configure named.conf.default-zones
+      ansible.builtin.lineinfile:
+        path: /etc/bind/named.conf.default-zones
+        insertafter: '};'
+        line: |
+          zone "tekaje.net" {
+              type master;
+              file "/etc/bind/forward";
+          };
+          zone "{{ reverse }}.in-addr.arpa" {
+              type master;
+              file "/etc/bind/reverse";
+          };
+      notify: Restart Bind9
+
+    - name: Copy db.local to forward
+      copy:
+        src: /etc/bind/db.local
+        dest: /etc/bind/forward
+        remote_src: yes
+      notify: Restart Bind9
+
+    - name: Copy db.127 to reverse
+      copy:
+        src: /etc/bind/db.127
+        dest: /etc/bind/reverse
+        remote_src: yes
+      notify: Restart Bind9
+
+    - name: Create zone file for tekaje.net
+      copy:
+        dest: /etc/bind/forward
+        content: |
+          $TTL    604800
+          @       IN      SOA     tekaje.net. root.tekaje.net. (
+                              2         ; Serial
+                         604800         ; Refresh
+                          86400         ; Retry
+                        2419200         ; Expire
+                         604800 )       ; Negative Cache TTL
+          ; Name servers
+          @       IN      NS      tekaje.net.
+                  IN      A       {{ ip_address1 }}
+          www     IN      A       {{ ip_address2 }}
+      notify: Restart Bind9
+    
+    - name: Create reverse file for tekaje.net
+      copy:
+        dest: /etc/bind/reverse
+        content: |
+          $TTL    604800
+          @       IN      SOA     tekaje.net. root.tekaje.net. (
+                              2         ; Serial
+                         604800         ; Refresh
+                          86400         ; Retry
+                        2419200         ; Expire
+                         604800 )       ; Negative Cache TTL
+          ; Name servers
+          @       IN      NS      tekaje.net.
+                  IN      PTR     tekaje.net.
+                  IN      PTR     www.tekaje.net.
+      notify: Restart Bind9
+
+    - name: Change nameserver in resolv.conf
+      lineinfile:
+        path: /etc/resolv.conf
+        regexp: '^nameserver '
+        line: "nameserver {{ ip_address1 }}"
+
+  handlers:
+    - name: Restart Bind9
+      service:
+        name: bind9
+        state: restarted

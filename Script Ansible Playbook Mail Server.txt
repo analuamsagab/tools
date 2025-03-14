@@ -1,0 +1,82 @@
+---
+- name: Install and Configure Mail Server (Postfix & Dovecot)
+  hosts: target
+  become: yes
+  vars:
+    domain_name: "mail.tekaje.net"
+    mail_user: "bagas"
+    mail_pass: "123"
+  tasks:
+    - name: Install required packages
+      apt:
+        name:
+          - postfix
+          - dovecot-imapd
+        state: present
+
+    - name: Configure Postfix main.cf
+      lineinfile:
+        path: /etc/postfix/main.cf
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      loop:
+        - { regexp: '^myhostname =', line: 'myhostname = {{ domain_name }}' }
+        - { regexp: '^mydestination =', line: 'mydestination = localhost, mail.{{ domain_name }}, {{ domain_name }}' }
+        - { regexp: '^inet_protocols =', line: 'inet_protocols = ipv4'}
+        - { regexp: '^inet_interfaces =', line: 'inet_interfaces = all' }
+        - { regexp: '^home_mailbox =', line: 'home_mailbox = Maildir/' }
+        - { regexp: '^mynetworks =', line: 'mynetworks = 127.0.0.0/8, 0.0.0.0/0' }
+      notify: Restart Postfix
+
+    - name: Membuat direktori Maildir untuk pengguna baru
+      command: "maildirmake.dovecot /etc/skel/Maildir"
+      args:
+          creates: /etc/skel/Maildir
+
+    - name: Configure Dovecot.conf
+      lineinfile:
+        path: /etc/dovecot/dovecot.conf
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      loop:
+        - { regexp: '^#listen = *, ::', line: 'listen = *' }
+      notify: Restart Dovecot
+    
+    - name: Configure Dovecot 10-mail.conf
+      lineinfile:
+        path: /etc/dovecot/conf.d/10-mail.conf
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      loop:
+        - { regexp: '^mail_location = mbox:~/mail:INBOX=/var/mail/%u', line: 'mail_location = maildir:~/Maildir' }
+      notify: Restart Dovecot
+
+    - name: Configure Dovecot 10-auth.conf
+      lineinfile:
+        path: /etc/dovecot/conf.d/10-auth.conf
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      loop:
+        - { regexp: '^#disable_plaintext_auth = yes', line: 'disable_plaintext_auth = no' }
+        - { regexp: '^auth_mechanisms = plain', line: 'auth_mechanisms = plain login' }
+      notify: Restart Dovecot
+
+    - name: Enable and start Postfix & Dovecot
+      systemd:
+        name: "{{ item }}"
+        state: started
+        enabled: yes
+      loop:
+        - postfix
+        - dovecot
+
+  handlers:
+    - name: Restart Postfix
+      systemd:
+        name: postfix
+        state: restarted
+
+    - name: Restart Dovecot
+      systemd:
+        name: dovecot
+        state: restarted

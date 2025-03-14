@@ -1,0 +1,44 @@
+---
+- name: Automate Apache2 Web Server Setup
+  hosts: target_server
+  become: true
+  tasks:
+
+    - name: Ensure Apache2 is installed
+      apt:
+        name: apache2
+        state: present
+        update_cache: yes
+
+    - name: Deploy custom index.html
+      copy:
+        dest: /var/www/html/index.html
+        content: |
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+              <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <title>Welcome to Apache</title>
+          </head>
+          <body>
+              <h1>Apache Server is Running!</h1>
+              <p>This is a test page deployed by Ansible.</p>
+          </body>
+          </html>
+
+    - name: Ensure Apache2 service is running and enabled
+      service:
+        name: apache2
+        state: started
+        enabled: yes
+
+    - name: Restart Apache2 service
+      service:
+        name: apache2
+        state: restarted
+
+    - name: Verify Apache2 is listening on port 80
+      wait_for:
+        port: 80
+        timeout: 10
